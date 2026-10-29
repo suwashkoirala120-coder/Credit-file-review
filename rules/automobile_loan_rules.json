@@ -37,7 +37,7 @@
     },
     "guarantor_identity": {
       "label": "Guarantor identity document",
-      "keywords": ["guarantor citizenship", "guarantor identity", "guarantor national id"],
+      "keywords": ["guarantor citizenship", "guarantor identity", "guarantor national id"]
     },
     "security_document": {
       "label": "Security / collateral document",
