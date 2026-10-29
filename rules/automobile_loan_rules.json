@@ -1,0 +1,77 @@
+{
+  "product_name": "Automobile Loan (prototype)",
+  "rules_version": "0.1.0-prototype",
+  "rules_notice": "Prototype screening rules only. Validate every rule against currently approved product policy and applicable regulation before use.",
+  "required_document_types": [
+    "loan_application",
+    "identity",
+    "vehicle_quotation",
+    "income_evidence",
+    "bank_statement",
+    "cic_report"
+  ],
+  "document_types": {
+    "loan_application": {
+      "label": "Loan application / proposal",
+      "keywords": ["loan application", "loan proposal", "credit proposal", "application form", "facility proposal"]
+    },
+    "identity": {
+      "label": "Borrower identity document",
+      "keywords": ["citizenship", "national identity", "national id", "identity card", "passport"]
+    },
+    "vehicle_quotation": {
+      "label": "Vehicle quotation",
+      "keywords": ["vehicle quotation", "quotation", "proforma invoice", "dealer quotation", "vehicle price"]
+    },
+    "income_evidence": {
+      "label": "Income / repayment-capacity evidence",
+      "keywords": ["salary certificate", "salary slip", "payslip", "income statement", "tax clearance", "tax return", "business income", "financial statement"]
+    },
+    "bank_statement": {
+      "label": "Bank statement",
+      "keywords": ["bank statement", "account statement", "statement of account"]
+    },
+    "cic_report": {
+      "label": "CIC / credit information report",
+      "keywords": ["cic report", "credit information", "credit bureau", "blacklist", "credit report"]
+    },
+    "guarantor_identity": {
+      "label": "Guarantor identity document",
+      "keywords": ["guarantor citizenship", "guarantor identity", "guarantor national id"],
+    },
+    "security_document": {
+      "label": "Security / collateral document",
+      "keywords": ["security document", "mortgage", "collateral", "pledge", "charge document"]
+    },
+    "other": {
+      "label": "Other / unclassified document",
+      "keywords": []
+    }
+  },
+  "text_checks": [
+    {
+      "id": "CHK-IDENTITY",
+      "title": "Identity evidence text not detected",
+      "severity": "medium",
+      "expected": "present",
+      "search_terms": ["citizenship", "national identity", "national id", "passport"],
+      "action": "Check the original borrower identity document and confirm the name and identity details."
+    },
+    {
+      "id": "CHK-CIC",
+      "title": "CIC / credit report evidence not detected",
+      "severity": "high",
+      "expected": "present",
+      "search_terms": ["cic", "credit information", "credit bureau"],
+      "action": "Verify that the current required credit information report is available and review it under the approved criteria."
+    },
+    {
+      "id": "CHK-INCOME",
+      "title": "Repayment-capacity evidence not detected",
+      "severity": "medium",
+      "expected": "present",
+      "search_terms": ["salary", "income", "tax return", "financial statement", "bank statement"],
+      "action": "Confirm required income, cash-flow, and repayment-capacity evidence under the applicable product policy."
+    }
+  ]
+}
