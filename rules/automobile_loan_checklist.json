@@ -1,0 +1,197 @@
+{
+  "title": "Automobile Loan Credit File Review Checklist",
+  "version": "1.0.0-draft",
+  "source": "User-provided Credit Proposal Review checklist",
+  "notice": "Draft workflow checklist transcribed from the supplied requirements. Confirm applicability, mandatory status, thresholds and wording against current approved bank policy and applicable regulation before operational use. A checked item means reviewed by a human; it does not mean passed or approved.",
+  "sections": [
+    {
+      "id": "kyc",
+      "title": "Borrower KYC and identity",
+      "items": [
+        "KYC tab is completed and information matches attached documents",
+        "Loan application date and account number",
+        "Customer name, gender, marital status and nationality",
+        "Date of birth (AD/BS) and age",
+        "Permanent and current address, including province, district, municipality/VDC, ward, street and house number",
+        "Phone and contact details, including alternate mobile and email",
+        "Three-generation details: father, mother, spouse (if married), father-in-law and grandfather",
+        "Citizenship number, issue date (AD/BS) and issuing district",
+        "National ID number and issue date, if applicable",
+        "Driving licence number and issue date, if applicable",
+        "Passport number, issue date and expiry date, if applicable",
+        "PAN number, issue date and issuing tax office, if applicable",
+        "PEP declaration and supporting verification"
+      ]
+    },
+    {
+      "id": "facility",
+      "title": "Facility and loan details",
+      "items": [
+        "Facility type and purpose",
+        "Proposed loan amount and intended loan amount",
+        "Loan tenure and EMI frequency",
+        "Interest rate and EMI amount",
+        "Drawdown details",
+        "Existing borrower exposure and other facilities with the Bank",
+        "Preferred branch and route, where applicable"
+      ]
+    },
+    {
+      "id": "vehicle",
+      "title": "Vehicle and quotation details",
+      "items": [
+        "Vehicle type, brand, model and year of production",
+        "Dealer name, phone number and email address",
+        "Vehicle quotation amount",
+        "Proposed down-payment amount",
+        "Multiple vehicles, if applicable, are separately recorded"
+      ]
+    },
+    {
+      "id": "security",
+      "title": "Security and collateral details",
+      "items": [
+        "Vehicle security details match the LOS Security Details tab and supporting documents",
+        "Land and building collateral details, if applicable",
+        "Property details match attached ownership and supporting documents",
+        "Security documents and collateral description are consistent"
+      ]
+    },
+    {
+      "id": "valuation",
+      "title": "Valuation report review",
+      "items": [
+        "Valuation date and property details",
+        "Area valued",
+        "Fair Market Value (FMV) and Distress Value (DV)",
+        "Frontage, road details and four boundaries",
+        "Right of Way (ROW)",
+        "Check references to river, high-tension line, army barracks and no-man's-land",
+        "Market rate and government rate"
+      ]
+    },
+    {
+      "id": "guarantor",
+      "title": "Guarantor details",
+      "items": [
+        "Guarantor name, date of birth and age",
+        "Relationship with borrower",
+        "Permanent and current address",
+        "Citizenship and contact information",
+        "Three-generation information",
+        "Occupation/profession and income information",
+        "PEP declaration",
+        "Additional guarantors recorded where required"
+      ]
+    },
+    {
+      "id": "group",
+      "title": "Group exposure",
+      "items": [
+        "Group details",
+        "Group limit",
+        "Group outstanding"
+      ]
+    },
+    {
+      "id": "cic",
+      "title": "CIC report review",
+      "items": [
+        "Name, date of birth and citizenship number",
+        "Citizenship issue date, father's name and grandfather's name",
+        "CIR number and report date",
+        "Probability of Default (PD)",
+        "Blacklisting history and active blacklisting details",
+        "Total active loan accounts and number of institutions",
+        "Maximum and minimum days overdue in the last 24 months, with reported month",
+        "Total EMI, total facilities and total sanctioned amount",
+        "Total outstanding balance and total amount overdue",
+        "Overdue ageing buckets and recent overdue amount/date"
+      ]
+    },
+    {
+      "id": "repayment",
+      "title": "Repayment capacity",
+      "items": [
+        "Industry average considered",
+        "Declared income reviewed",
+        "Tax statement reviewed",
+        "Bank statement reviewed",
+        "Agreement documents and certificates reviewed",
+        "Pay slips or other applicable income evidence reviewed"
+      ]
+    },
+    {
+      "id": "controls",
+      "title": "Control and compliance checks",
+      "items": [
+        "Borrower age eligibility checked against approved policy",
+        "Borrower age at loan maturity checked against approved policy",
+        "Vehicle age checked against approved policy",
+        "Loan tenure compared with vehicle age as required by the supplied checklist",
+        "Guarantor availability confirmed",
+        "Guarantor age and age at maturity checked against approved policy",
+        "Proposed loan amount compared with quotation amount against approved policy",
+        "Customer PEP status checked",
+        "Driving licence validity checked, where applicable",
+        "Customer experience checked against approved policy",
+        "Other loan facilities with the Bank checked"
+      ]
+    },
+    {
+      "id": "additional",
+      "title": "Additional documents",
+      "items": [
+        "RORC",
+        "ICRR",
+        "Experience document",
+        "RSVR",
+        "CVSR"
+      ]
+    },
+    {
+      "id": "documents",
+      "title": "Required document inventory",
+      "items": [
+        "Citizenship document: presence, OCR/extraction and verification",
+        "National ID: conditional applicability, OCR/extraction and verification",
+        "Driving licence: applicability, OCR/extraction and verification",
+        "Vehicle quotation: presence, OCR/extraction and verification",
+        "Income document: applicability, OCR/extraction and verification",
+        "Bank statement: conditional applicability, OCR/extraction and verification",
+        "Business registration: conditional applicability, OCR/extraction and verification",
+        "Guarantor citizenship: presence, OCR/extraction and verification"
+      ]
+    },
+    {
+      "id": "cic_acceptance",
+      "title": "CIC acceptance criteria from supplied checklist",
+      "items": [
+        "PD threshold checked against current approved criteria",
+        "Active overdue status checked",
+        "Overdue in the last six instalments checked",
+        "Active blacklisting records checked",
+        "Blacklisting history checked",
+        "Active loan accounts checked for pass category",
+        "Guaranteed loan accounts checked for pass category"
+      ]
+    },
+    {
+      "id": "security_docs",
+      "title": "Security document preparation and verification",
+      "items": [
+        "Information extracted from attached documents using approved OCR, where available",
+        "Extracted information entered into the prescribed format for non-standard documents",
+        "Borrower and guarantor details verified",
+        "Facility details verified",
+        "Security details verified",
+        "All required documents uploaded as per prescribed checklist",
+        "Required security documents properly executed",
+        "Approval log checked against standard",
+        "Unit and group limits extracted and checked",
+        "Variations escalated or communicated to the branch",
+        "Final decision recorded by an authorized human reviewer"
+      ]
+    }
+  ]
+}
