@@ -25,3 +25,19 @@ def test_required_documents_are_configured():
 def test_rule_severities_are_known():
     rules = load_rules()
     assert all(rule["severity"] in {"info", "low", "medium", "high"} for rule in rules["text_checks"])
+
+
+def test_credit_review_checklist_has_sections_and_items():
+    checklist_path = Path(__file__).resolve().parents[1] / "rules" / "automobile_loan_checklist.json"
+    checklist = json.loads(checklist_path.read_text(encoding="utf-8"))
+    assert checklist["sections"]
+    assert all(section["items"] for section in checklist["sections"])
+    assert any(section["id"] == "cic" for section in checklist["sections"])
+    assert any(section["id"] == "security_docs" for section in checklist["sections"])
+
+
+def test_checklist_explicitly_requires_human_validation():
+    checklist_path = Path(__file__).resolve().parents[1] / "rules" / "automobile_loan_checklist.json"
+    checklist = json.loads(checklist_path.read_text(encoding="utf-8"))
+    assert "human" in checklist["notice"].lower()
+    assert "policy" in checklist["notice"].lower()
