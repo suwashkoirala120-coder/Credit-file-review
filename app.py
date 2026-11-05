@@ -22,6 +22,32 @@ def load_rules() -> dict[str, Any]:
         return json.load(f)
 
 
+def load_checklist() -> dict[str, Any]:
+    checklist_path = ROOT / "rules" / "automobile_loan_checklist.json"
+    with checklist_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def checklist_snapshot(checklist: dict[str, Any]) -> dict[str, Any]:
+    """Capture human review completion; checked means reviewed, not passed."""
+    sections = []
+    total = 0
+    reviewed = 0
+    for section in checklist["sections"]:
+        items = []
+        for index, item in enumerate(section["items"]):
+            key = f"cad_review_{section['id']}_{index}"
+            is_reviewed = bool(st.session_state.get(key, False))
+            total += 1
+            reviewed += int(is_reviewed)
+            items.append({"item": item, "status": "reviewed" if is_reviewed else "pending_human_review"})
+        sections.append({"section_id": section["id"], "title": section["title"], "items": items})
+    return {"checklist_version": checklist["version"], "total_items": total,
+            "reviewed_items": reviewed, "pending_items": total - reviewed,
+            "meaning": "Reviewed means a human checked the item; it does not mean passed or approved.",
+            "sections": sections}
+
+
 def extract_text(filename: str, raw: bytes) -> tuple[str, str | None]:
     """Extract embedded text locally. This does not perform OCR."""
     suffix = Path(filename).suffix.lower()
@@ -174,6 +200,7 @@ st.warning(
 )
 
 rules = load_rules()
+checklist = load_checklist()
 with st.sidebar:
     st.header("Review settings")
     st.write("Product:", rules["product_name"])
@@ -182,6 +209,13 @@ with st.sidebar:
     st.write("Supported:", "PDF, DOCX, TXT")
     st.write("Max per file:", "15 MB")
     st.info("Scanned PDF OCR and external LLM calls are not included in this MVP.")
+
+st.subheader("CAD manual review checklist")
+st.caption("Tick an item only after a human reviewer has checked it against the original documents. A tick records review completion, not compliance or approval.")
+for section in checklist["sections"]:
+    with st.expander(section["title"], expanded=False):
+        for index, item in enumerate(section["items"]):
+            st.checkbox(item, key=f"cad_review_{section['id']}_{index}")
 
 uploads = st.file_uploader(
     "Upload credit-file documents",
@@ -235,6 +269,7 @@ if st.session_state.get("extraction_warnings"):
 
 report = st.session_state.get("review_report")
 if report:
+    report["manual_checklist"] = checklist_snapshot(checklist)
     st.subheader("Review summary")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Documents processed", report["summary"]["documents"])
