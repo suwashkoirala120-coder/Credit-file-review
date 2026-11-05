@@ -26,18 +26,21 @@ Requires Python 3.10 or later.
 - Rule-based checks for document presence, key fields, and selected automobile-loan checklist items.
 - Simple comparison of extracted borrower names and facility amounts across documents.
 - Findings categorized as information, review required, or high priority.
+- Structured automobile-loan checklist covering KYC, facility, vehicle, security, valuation, guarantor, group exposure, CIC, repayment capacity, compliance and security-document review.
+- Human checklist completion tracking, included in the downloadable JSON report. A completed tick means reviewed by a human, not passed or approved.
 - Downloadable JSON review report.
 
 ## Repository structure
 
 - `app.py`: Streamlit user interface and review workflow.
-- `rules/automobile_loan_rules.json`: editable prototype rules and document checklist.
+- `rules/automobile_loan_rules.json`: editable prototype document-classification and text-screening rules.
+- `rules/automobile_loan_checklist.json`: structured draft checklist transcribed from the supplied Credit Proposal Review requirements.
 - `tests/test_review.py`: basic tests for deterministic rule helpers.
 - `docs/security_controls.md`: security and governance considerations.
 
 ## Next steps before a pilot
 
-1. Confirm the product checklist and rule wording with CAD, Credit Risk, Legal, Compliance, and IT.
+1. Confirm the product checklist and rule wording with CAD, Credit Risk, Legal, Compliance, and IT. In particular, validate all thresholds and acceptance criteria before enabling automated screening.
 2. Add approved, versioned policy sources and page/paragraph citations.
 3. Validate extraction and rule performance against a representative set of anonymized files.
 4. Add authentication, role-based access, audit logging, encrypted approved storage, and secure deployment.
