@@ -13,3 +13,7 @@ reports/
 *.xls
 *.csv
 .DS_Store
+
+# Local workflow demo data
+credit_review.db
+credit_review.db-*

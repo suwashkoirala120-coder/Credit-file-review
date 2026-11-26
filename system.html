@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Credit Review System</title>
+  <link rel="stylesheet" href="/system.css" />
+  <script defer src="/system.js"></script>
+</head>
+<body>
+  <section id="loginScreen" class="login-screen">
+    <div class="login-card"><div class="brand"><span class="brand-mark">N</span><div><b>NORTHSTAR</b><small>Credit operations</small></div></div><div class="eyebrow">SECURE WORKSPACE</div><h1>Sign in to Credit Review</h1><p>Use your assigned account to access your role's application queue.</p><form id="loginForm"><label>Username<input id="loginUsername" autocomplete="username" required /></label><label>Password<input id="loginPassword" type="password" autocomplete="current-password" required /></label><div id="loginError" class="error-message hidden"></div><button class="btn btn-primary wide">Sign in</button></form><div class="login-hint">Local demo: <b>admin</b> · <b>Demo123!</b></div></div>
+  </section>
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar"><div class="brand"><span class="brand-mark">N</span><div><b>NORTHSTAR</b><small>Credit operations</small></div></div><div class="side-label">WORKSPACE</div><nav id="mainNav"></nav><div class="sidebar-user"><div class="avatar" id="userInitials">U</div><div><b id="sidebarName">User</b><small id="sidebarRole">Role</small></div><button class="icon-button" id="logoutButton" title="Sign out">↪</button></div></aside>
+    <main class="main"><header class="topbar"><div class="crumb">Credit operations <span>/</span> <b id="pageCrumb">Dashboard</b></div><div class="user-context"><span class="role-chip" id="roleChip"></span><span class="sync"><i></i> Server connected</span></div></header><div class="page-wrap"><div id="viewRoot"></div></div></main>
+  </div>
+  <div id="returnModal" class="modal-backdrop hidden"><form id="returnForm" class="modal-card"><button class="modal-x" type="button" id="returnClose">×</button><div class="eyebrow">WORKFLOW RETURN</div><h2>Return for changes</h2><p>Remarks are required and will be retained in the handoff history.</p><label>Return remarks<textarea id="returnRemarks" required minlength="5" maxlength="4000" placeholder="Describe the missing information, corrections, or documents needed."></textarea></label><div class="modal-actions"><button class="btn btn-light" type="button" id="returnCancel">Cancel</button><button class="btn btn-danger">Return to previous reviewer</button></div></form></div>
+  <div id="toast" class="toast"></div>
+</body>
+</html>
+

@@ -45,3 +45,30 @@ Requires Python 3.10 or later.
 3. Validate extraction and rule performance against a representative set of anonymized files.
 4. Add authentication, role-based access, audit logging, encrypted approved storage, and secure deployment.
 5. Complete bank security, privacy, model-risk, and regulatory approvals.
+
+
+## Full workflow system (local demo)
+
+The repository also includes a server-backed workflow demo with role-specific queues and dashboards, server-enforced module and field CRUD permissions, scoped user assignments, reviewer handoffs, mandatory remarks on returns, application history, document uploads, and portfolio reports.
+
+### Run
+
+Requires Python 3.10 or later. From the repository root, run:
+
+```powershell
+python server.py
+```
+
+Then open http://127.0.0.1:8000. SQLite data is created in `credit_review.db`; uploaded files are stored in `uploads/`. Both are local runtime data and are excluded from Git.
+
+Seeded demo accounts (all use `Demo123!`):
+
+- RO: `ro.alex`
+- Branch Manager: `bm.mina`
+- Cluster Head: `ch.rabin`
+- Risk Reviewer: `risk.nirmala`
+- Approver: `approver.sanjay`
+- CAD: `cad.bikash`
+- Superadmin: `admin`
+
+This is a local demonstration, not an approved banking deployment. Do not use real customer files or expose the demo accounts to a network. It has no bank SSO, LOS/CIC integration, malware scanning, production document storage, or production security review. Replace the seeded credentials and complete security, privacy, policy, and deployment reviews before any pilot.
