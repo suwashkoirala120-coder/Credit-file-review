@@ -1,0 +1,5 @@
+#demoRoleSelect{width:100%;border:1px solid #dce4ec;border-radius:5px;background:#fff;padding:10px;color:#334b63;outline:none}
+.switch-account{display:flex;align-items:center;justify-content:center;gap:8px;margin:12px 2px 0;padding:10px 12px;border:1px solid #35536e;border-radius:6px;background:#1a354f;color:#d9e6f2;font-size:11px;font-weight:600}
+.switch-account:hover{background:#254765;color:#fff}
+@media(max-width:720px){.switch-account{width:42px;margin:10px auto 0;padding:10px 0;font-size:0}.switch-account span{display:none}}
+

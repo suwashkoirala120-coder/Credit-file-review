@@ -72,3 +72,10 @@ Seeded demo accounts (all use `Demo123!`):
 - Superadmin: `admin`
 
 This is a local demonstration, not an approved banking deployment. Do not use real customer files or expose the demo accounts to a network. It has no bank SSO, LOS/CIC integration, malware scanning, production document storage, or production security review. Replace the seeded credentials and complete security, privacy, policy, and deployment reviews before any pilot.
+
+
+### CAD document review
+
+The CAD stage includes source-document upload, a human review checklist based on `rules/automobile_loan_checklist.json` (required document inventory and security-document sections), per-item document links and review remarks, persisted discrepancy statuses, and a completion gate until checklist items are resolved or marked not applicable with remarks. The checklist is a draft and requires validation against current approved policy.
+
+The sign-in screen provides demo role selection; the sidebar Switch account button signs out before another role account is used. Seeded demo accounts use `Demo123!`.

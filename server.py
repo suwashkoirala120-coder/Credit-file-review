@@ -44,6 +44,11 @@ MODULE_FIELDS = {
     "Reporting": ["Branch reports", "Portfolio reports", "Export data", "Sensitive fields"],
     "Users & roles": ["User assignment", "Role definitions", "Module permissions", "Field permissions"],
 }
+CHECKLIST_PATH = BASE / "rules" / "automobile_loan_checklist.json"
+with CHECKLIST_PATH.open("r", encoding="utf-8") as checklist_file:
+    CHECKLIST_DOCUMENT = json.load(checklist_file)
+CAD_CHECKLIST_SECTIONS = [section for section in CHECKLIST_DOCUMENT["sections"] if section["id"] in {"documents", "security_docs"}]
+CAD_CHECKLIST_ITEMS = [(f"{section['id']}--{index}", section["title"], item) for section in CAD_CHECKLIST_SECTIONS for index, item in enumerate(section["items"])]
 DATA_FIELDS = {
     "KYC & customer": set("name gender marital_status dob nationality profession father_name mother_name spouse_name father_in_law grandfather_name citizenship citizenship_issue_date issued_district national_id license_no license_expiry passport_no passport_issue_date passport_expiry pan pan_issue_date tax_office permanent_address current_address phone mobile alternate_mobile email alternate_email pep experience_years other_bank_loans".split()),
     "Facility & vehicle": set("type vehicle_type route brand model year dealer dealer_phone dealer_email quotation down_payment amount tenure_months rate emi_frequency purpose existing_exposure vehicles".split()),
@@ -131,6 +136,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS applications(id TEXT PRIMARY KEY, customer_name TEXT NOT NULL, branch TEXT NOT NULL, stage TEXT NOT NULL, amount INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'In review', created_by INTEGER NOT NULL REFERENCES users(id), data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT, application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE, action TEXT NOT NULL, from_stage TEXT NOT NULL, to_stage TEXT NOT NULL, actor_id INTEGER NOT NULL REFERENCES users(id), actor_role TEXT NOT NULL, remarks TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY, application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE, original_name TEXT NOT NULL, stored_name TEXT NOT NULL, content_type TEXT NOT NULL, size INTEGER NOT NULL, document_type TEXT NOT NULL, uploaded_by INTEGER NOT NULL REFERENCES users(id), status TEXT NOT NULL DEFAULT 'Pending verification', created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS checklist_reviews(application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE, item_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Pending', document_id TEXT REFERENCES documents(id) ON DELETE SET NULL, remarks TEXT NOT NULL DEFAULT '', updated_by INTEGER REFERENCES users(id), updated_at TEXT NOT NULL, PRIMARY KEY(application_id,item_id));
         CREATE TABLE IF NOT EXISTS admin_history(id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL, target TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_apps_stage ON applications(stage);
         CREATE INDEX IF NOT EXISTS idx_apps_branch ON applications(branch);
@@ -138,6 +144,19 @@ def init_db() -> None:
         """)
         for role in ROLES:
             db.execute("INSERT OR IGNORE INTO roles(name,permissions,built_in,created_at) VALUES(?,?,1,?)", (role, json.dumps(permission_defaults(role)), now_iso()))
+            role_row = db.execute("SELECT permissions FROM roles WHERE name=?", (role,)).fetchone()
+            permissions = json.loads(role_row["permissions"])
+            defaults = permission_defaults(role)
+            changed = False
+            for module, fields in MODULE_FIELDS.items():
+                permissions.setdefault(module, {"__module": defaults[module]["__module"]})
+                permissions[module].setdefault("__module", defaults[module]["__module"])
+                for field in fields:
+                    if field not in permissions[module]:
+                        permissions[module][field] = defaults[module][field]
+                        changed = True
+            if changed:
+                db.execute("UPDATE roles SET permissions=? WHERE name=?", (json.dumps(permissions), role))
         seeds = [
             ("ro.alex", "Alex Shrestha", "alex@northstar.test", "RO", ["Lalitpur"], "Lalitpur"),
             ("bm.mina", "Mina Karki", "mina@northstar.test", "Branch Manager", ["Lalitpur"], "Lalitpur"),
@@ -317,6 +336,10 @@ class CreditHandler(BaseHTTPRequestHandler):
                 hist = db.execute("SELECT h.action,h.from_stage,h.to_stage,h.actor_role,u.display_name,h.remarks,h.created_at FROM history h JOIN users u ON u.id=h.actor_id WHERE application_id=? ORDER BY h.id DESC", (app["id"],)).fetchall()
             if self.has_permission(user["role"], "Documents", "R"):
                 result["documents"] = [dict(x) for x in docs]
+                result["cad_checklist"] = {"title": CHECKLIST_DOCUMENT["title"], "version": CHECKLIST_DOCUMENT["version"], "notice": CHECKLIST_DOCUMENT["notice"], "sections": CAD_CHECKLIST_SECTIONS}
+                with connect() as review_db:
+                    reviews = review_db.execute("SELECT item_id,status,document_id,remarks,updated_by,updated_at FROM checklist_reviews WHERE application_id=?", (app["id"],)).fetchall()
+                result["checklist_reviews"] = {row["item_id"]: dict(row) for row in reviews}
             if self.has_permission(user["role"], "Workflow", "R"):
                 result["history"] = [dict(x) for x in hist]
                 result["return_remarks"] = self.last_return_remarks(app["id"])
@@ -330,7 +353,7 @@ class CreditHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path); path = unquote(parsed.path)
         if path == "/" or path == "/system": return self.serve_file(BASE / "system.html")
         if path == "/prototype": return self.serve_file(BASE / "index.html")
-        if path in ["/system.css", "/system.js"]: return self.serve_file(BASE / path.lstrip("/"))
+        if path in ["/system.css", "/system.js", "/role-switch.css", "/cad-review.css"]: return self.serve_file(BASE / path.lstrip("/"))
         if path == "/api/health": return self.send_json(200, {"status": "ok", "service": "Credit Review System"})
         user, _ = self.session_user()
         if not user: return self.send_json(401, {"error": "Sign in required"})
@@ -390,6 +413,8 @@ class CreditHandler(BaseHTTPRequestHandler):
         user = self.require_auth(csrf=True)
         if not user: return
         path = unquote(urlparse(self.path).path)
+        checklist_match = re.fullmatch(r"/api/applications/([^/]+)/checklist/([^/]+)", path)
+        if checklist_match: return self.update_checklist_review(user, checklist_match.group(1), checklist_match.group(2))
         match = re.fullmatch(r"/api/admin/roles/([^/]+)/permissions", path)
         if match: return self.update_role_permissions(user, match.group(1))
         return self.send_json(404, {"error": "Not found"})
@@ -546,6 +571,12 @@ class CreditHandler(BaseHTTPRequestHandler):
                     db.execute("UPDATE applications SET stage=?,status=?,data=?,updated_at=?,version=version+1 WHERE id=?", (target, "Declined" if target == "Declined" else "Approved", json.dumps(data), now_iso(), app_id))
                     self.audit(db, app_id, f"Decision · {recommendation}", stage, target, user, rationale)
                 else:
+                    if stage == "CAD":
+                        with connect() as review_db:
+                            reviews = {row["item_id"]: row["status"] for row in review_db.execute("SELECT item_id,status FROM checklist_reviews WHERE application_id=?", (app_id,)).fetchall()}
+                        pending = [item_id for item_id, _, _ in CAD_CHECKLIST_ITEMS if reviews.get(item_id, "Pending") not in ["Verified", "Not Applicable"]]
+                        if pending:
+                            return self.send_json(409, {"error": f"CAD review has {len(pending)} checklist item(s) pending or discrepant. Resolve them or return the file with remarks before completion."})
                     target = NEXT_STAGE.get(stage)
                     if not target: return self.send_json(409, {"error": "This stage cannot be forwarded"})
                     status = "Completed" if target == "Completed" else "In review"
@@ -709,6 +740,33 @@ class CreditHandler(BaseHTTPRequestHandler):
             db.execute("UPDATE documents SET status=? WHERE id=?", (status, doc_id))
             self.audit(db, doc["application_id"], "Document status updated", doc["stage"], doc["stage"], user, status)
         return self.send_json(200, {"ok": True, "status": status})
+
+    def update_checklist_review(self, user, app_id, item_id):
+        try: data = self.body_json()
+        except ValueError as e: return self.send_json(400, {"error": str(e)})
+        item = next((entry for entry in CAD_CHECKLIST_ITEMS if entry[0] == item_id), None)
+        if not item: return self.send_json(404, {"error": "Checklist item not found"})
+        status = str(data.get("status", "Pending"))
+        remarks = str(data.get("remarks", "")).strip()
+        document_id = str(data.get("document_id", "")).strip() or None
+        if status not in ["Pending", "Verified", "Discrepancy", "Not Applicable"]: return self.send_json(400, {"error": "Invalid checklist status"})
+        if status in ["Discrepancy", "Not Applicable"] and len(remarks) < 5: return self.send_json(400, {"error": "Add specific remarks for a discrepancy or not-applicable item"})
+        if status == "Verified" and item_id.startswith("documents--") and not document_id: return self.send_json(400, {"error": "Link the supporting uploaded document before marking this item verified"})
+        if not self.has_permission(user["role"], "Documents", "U", "Verification result"): return self.send_json(403, {"error": "Document checklist review permission required"})
+        with connect() as db:
+            app = db.execute("SELECT * FROM applications WHERE id=?", (app_id,)).fetchone()
+            if not app: return self.send_json(404, {"error": "Application not found"})
+            if not self.can_see_app(user, app): return self.send_json(403, {"error": "Application outside your scope"})
+            if user["role"] != "Superadmin" and (user["role"] != "CAD" or app["stage"] != "CAD"): return self.send_json(403, {"error": "Only CAD can review the document checklist at CAD stage"})
+            if document_id:
+                linked = db.execute("SELECT id FROM documents WHERE id=? AND application_id=?", (document_id, app_id)).fetchone()
+                if not linked: return self.send_json(400, {"error": "Linked document must belong to this application"})
+            db.execute("INSERT INTO checklist_reviews(application_id,item_id,status,document_id,remarks,updated_by,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(application_id,item_id) DO UPDATE SET status=excluded.status,document_id=excluded.document_id,remarks=excluded.remarks,updated_by=excluded.updated_by,updated_at=excluded.updated_at",
+                       (app_id, item_id, status, document_id, remarks, user["id"], now_iso()))
+            from_stage = app["stage"]
+            audit_text = f"{status} · {item[2]}" + (f" · {remarks}" if remarks else "")
+            self.audit(db, app_id, "CAD checklist review", from_stage, from_stage, user, audit_text)
+        return self.send_json(200, {"ok": True, "item_id": item_id, "status": status})
 
     def download_document(self, user, doc_id):
         if not self.has_permission(user["role"], "Documents", "R", "Document upload"): return self.send_json(403, {"error": "Document read access required"})
