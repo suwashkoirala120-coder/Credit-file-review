@@ -79,3 +79,8 @@ This is a local demonstration, not an approved banking deployment. Do not use re
 The CAD stage includes source-document upload, a human review checklist based on `rules/automobile_loan_checklist.json` (required document inventory and security-document sections), per-item document links and review remarks, persisted discrepancy statuses, and a completion gate until checklist items are resolved or marked not applicable with remarks. The checklist is a draft and requires validation against current approved policy.
 
 The sign-in screen provides demo role selection; the sidebar Switch account button signs out before another role account is used. Seeded demo accounts use `Demo123!`.
+
+
+### Automatic CAD exception validation
+
+At the Approver stage, capture the approved amount, tenure, rate, EMI, down payment, vehicle/security terms and conditions. At CAD, upload executed agreements/security documents and run checks against the approved terms and the draft standard document inventory. Uploads trigger a new persisted exception report; CAD can rerun checks, download the report as CSV, link files to checklist items, record discrepancies, or mark obsolete uploads as superseded. Missing required files and term deviations are reported and block completion. Readable-text matching supports TXT, DOCX and text-layer PDFs; scanned image OCR is used only if Tesseract is installed. Otherwise those files are reported for manual review. The checklist is a draft and needs policy-owner validation.

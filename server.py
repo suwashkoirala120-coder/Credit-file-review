@@ -10,10 +10,15 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 import uuid
+import zipfile
+import zlib
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.parser import BytesParser
 from email.policy import default
@@ -40,14 +45,14 @@ MODULE_FIELDS = {
     "Security & valuation": ["Collateral details", "FMV / DV", "Site & boundary risks", "Group limit & outstanding"],
     "Guarantor": ["Guarantor identity", "Date of birth & age", "Income & occupation", "PEP declaration"],
     "Workflow": ["Initiate / submit", "Forward file", "Return file", "Return remarks"],
-    "Credit decision": ["Recommendation", "Approval authority", "Decision rationale", "Conditions"],
+    "Credit decision": ["Recommendation", "Approval authority", "Decision rationale", "Conditions", "Approved credit terms"],
     "Reporting": ["Branch reports", "Portfolio reports", "Export data", "Sensitive fields"],
     "Users & roles": ["User assignment", "Role definitions", "Module permissions", "Field permissions"],
 }
 CHECKLIST_PATH = BASE / "rules" / "automobile_loan_checklist.json"
 with CHECKLIST_PATH.open("r", encoding="utf-8") as checklist_file:
     CHECKLIST_DOCUMENT = json.load(checklist_file)
-CAD_CHECKLIST_SECTIONS = [section for section in CHECKLIST_DOCUMENT["sections"] if section["id"] in {"documents", "security_docs"}]
+CAD_CHECKLIST_SECTIONS = [section for section in CHECKLIST_DOCUMENT["sections"] if section["id"] in {"documents", "additional", "security_docs"}]
 CAD_CHECKLIST_ITEMS = [(f"{section['id']}--{index}", section["title"], item) for section in CAD_CHECKLIST_SECTIONS for index, item in enumerate(section["items"])]
 DATA_FIELDS = {
     "KYC & customer": set("name gender marital_status dob nationality profession father_name mother_name spouse_name father_in_law grandfather_name citizenship citizenship_issue_date issued_district national_id license_no license_expiry passport_no passport_issue_date passport_expiry pan pan_issue_date tax_office permanent_address current_address phone mobile alternate_mobile email alternate_email pep experience_years other_bank_loans".split()),
@@ -57,7 +62,7 @@ DATA_FIELDS = {
     "Repayment": set("declared_income industry_average tax_income bank_average agreement_income other_emi assessment".split()),
     "Security & valuation": set("security_type property_details valuation_date area_valuated fmv dv market_rate government_rate frontage road row boundary_north boundary_south boundary_east boundary_west site_risks group_name group_limit group_outstanding review_notes".split()),
     "Guarantor": set("name dob relationship citizenship address profession income pep additional_guarantors".split()),
-    "Credit decision": set("recommendation authority rationale conditions".split()),
+    "Credit decision": set("recommendation authority rationale conditions approved_amount approved_tenure_months approved_rate approved_emi approved_down_payment approved_vehicle".split()),
 }
 ROLES = ["RO", "Branch Manager", "Cluster Head", "Risk Reviewer", "Approver", "CAD", "Superadmin"]
 STAGES = ["RO Review", "Branch Manager Review", "Cluster Head Review", "Risk Review", "Approval", "CAD", "Completed", "Declined"]
@@ -68,6 +73,83 @@ PREVIOUS_STAGE = {"Branch Manager Review": "RO Review", "Cluster Head Review": "
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _pdf_unescape(value: bytes) -> str:
+    value = re.sub(rb"\\([0-7]{1,3})", lambda match: bytes([int(match.group(1), 8)]), value)
+    replacements = {b"\\n": b"\n", b"\\r": b"\r", b"\\t": b"\t", b"\\b": b"\b", b"\\f": b"\f", b"\\(": b"(", b"\\)": b")", b"\\\\": b"\\"}
+    for source, target in replacements.items(): value = value.replace(source, target)
+    try: return value.decode("utf-8")
+    except UnicodeDecodeError: return value.decode("cp1252", errors="replace")
+
+
+def extract_pdf_text(data: bytes) -> str:
+    text_parts = []
+    stream_pattern = re.compile(rb"(<<.*?>>)\s*stream\r?\n(.*?)\r?\nendstream", re.S)
+    for match in stream_pattern.finditer(data):
+        if sum(len(part) for part in text_parts) > 1_000_000: break
+        descriptor, stream = match.group(1), match.group(2)
+        if b"FlateDecode" in descriptor:
+            try: stream = zlib.decompressobj().decompress(stream, 1_000_000)
+            except zlib.error: continue
+        for literal in re.findall(rb"\(((?:\\.|[^\\)])*)\)\s*Tj", stream):
+            text_parts.append(_pdf_unescape(literal))
+        for array in re.findall(rb"\[(.*?)\]\s*TJ", stream, re.S):
+            for literal in re.findall(rb"\(((?:\\.|[^\\)])*)\)", array):
+                text_parts.append(_pdf_unescape(literal))
+            for hexadecimal in re.findall(rb"<([0-9A-Fa-f\s]+)>", array):
+                raw = bytes.fromhex(re.sub(rb"\s", b"", hexadecimal).decode("ascii"))
+                try: text_parts.append(raw.decode("utf-16-be") if len(raw) % 2 == 0 else raw.decode("latin-1"))
+                except (UnicodeDecodeError, ValueError): pass
+        for hexadecimal in re.findall(rb"<([0-9A-Fa-f\s]+)>\s*Tj", stream):
+            raw = bytes.fromhex(re.sub(rb"\s", b"", hexadecimal).decode("ascii"))
+            try: text_parts.append(raw.decode("utf-16-be") if len(raw) % 2 == 0 else raw.decode("latin-1"))
+            except (UnicodeDecodeError, ValueError): pass
+    return re.sub(r"\s+", " ", " ".join(text_parts)).strip()
+
+
+def extract_document_text(file_path: Path) -> tuple[str, str]:
+    ext = file_path.suffix.lower()
+    try:
+        if ext == ".txt":
+            return file_path.read_text(encoding="utf-8", errors="replace").strip(), "Text extracted"
+        if ext == ".docx":
+            with zipfile.ZipFile(file_path) as archive:
+                xml_info=archive.getinfo("word/document.xml")
+                if xml_info.file_size>5_000_000: return "", "Document text exceeds extraction limit"
+                root = ET.fromstring(archive.read("word/document.xml"))
+            text = " ".join(node.text or "" for node in root.iter() if node.tag.endswith("}t"))
+            return re.sub(r"\s+", " ", text).strip(), "Text extracted"
+        if ext == ".pdf":
+            command = shutil.which("pdftotext")
+            if command:
+                result = subprocess.run([command, "-layout", str(file_path), "-"], capture_output=True, text=True, timeout=25)
+                if result.returncode == 0 and result.stdout.strip(): return re.sub(r"\s+", " ", result.stdout).strip(), "Text extracted"
+            text = extract_pdf_text(file_path.read_bytes())
+            return text, "Text extracted" if text else "No readable text layer"
+        if ext in [".png", ".jpg", ".jpeg", ".webp"]:
+            command = shutil.which("tesseract")
+            if command:
+                result = subprocess.run([command, str(file_path), "stdout"], capture_output=True, text=True, timeout=25)
+                if result.returncode == 0 and result.stdout.strip(): return re.sub(r"\s+", " ", result.stdout).strip(), "OCR extracted"
+            return "", "OCR unavailable"
+    except (OSError, KeyError, zipfile.BadZipFile, ET.ParseError, subprocess.SubprocessError, ValueError, zlib.error) as exc:
+        return "", "Extraction error: " + str(exc)[:220]
+    return "", "Unsupported file type"
+
+
+def normalize_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def labeled_number(text: str, labels: list[str]) -> float | None:
+    for label in labels:
+        pattern = re.compile(r"(?:^|\b)" + label + r"\b[^\d]{0,45}([\d,]+(?:\.\d+)?)", re.I)
+        match = pattern.search(text)
+        if match:
+            try: return float(match.group(1).replace(",", ""))
+            except ValueError: pass
+    return None
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -137,6 +219,8 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT, application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE, action TEXT NOT NULL, from_stage TEXT NOT NULL, to_stage TEXT NOT NULL, actor_id INTEGER NOT NULL REFERENCES users(id), actor_role TEXT NOT NULL, remarks TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY, application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE, original_name TEXT NOT NULL, stored_name TEXT NOT NULL, content_type TEXT NOT NULL, size INTEGER NOT NULL, document_type TEXT NOT NULL, uploaded_by INTEGER NOT NULL REFERENCES users(id), status TEXT NOT NULL DEFAULT 'Pending verification', created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS checklist_reviews(application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE, item_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Pending', document_id TEXT REFERENCES documents(id) ON DELETE SET NULL, remarks TEXT NOT NULL DEFAULT '', updated_by INTEGER REFERENCES users(id), updated_at TEXT NOT NULL, PRIMARY KEY(application_id,item_id));
+        CREATE TABLE IF NOT EXISTS document_extractions(document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE, extraction_status TEXT NOT NULL, extracted_text TEXT NOT NULL DEFAULT '', extracted_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS cad_validation_runs(id TEXT PRIMARY KEY, application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE, generated_by INTEGER REFERENCES users(id), generated_at TEXT NOT NULL, report_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS admin_history(id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL, target TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_apps_stage ON applications(stage);
         CREATE INDEX IF NOT EXISTS idx_apps_branch ON applications(branch);
@@ -229,6 +313,7 @@ def field_group(module: str, key: str) -> str | None:
         if any(x in k for x in ["verification", "status"]): return "Verification result"
         return "Document upload"
     if module == "Credit decision":
+        if "approved " in k: return "Approved credit terms"
         if "rationale" in k: return "Decision rationale"
         if "authority" in k or "approver" in k: return "Approval authority"
         if "condition" in k: return "Conditions"
@@ -332,7 +417,7 @@ class CreditHandler(BaseHTTPRequestHandler):
         result = {"id": app["id"], "customer_name": app["customer_name"] if customer_visible else "Restricted customer", "branch": app["branch"], "stage": app["stage"], "amount": app["amount"] if amount_visible else None, "status": app["status"], "created_at": app["created_at"], "updated_at": app["updated_at"], "version": app["version"], "data": cleaned}
         if detail:
             with connect() as db:
-                docs = db.execute("SELECT id,original_name,content_type,size,document_type,status,created_at FROM documents WHERE application_id=? ORDER BY created_at", (app["id"],)).fetchall()
+                docs = db.execute("SELECT d.id,d.original_name,d.content_type,d.size,d.document_type,d.status,d.created_at,e.extraction_status,e.extracted_at FROM documents d LEFT JOIN document_extractions e ON e.document_id=d.id WHERE d.application_id=? ORDER BY d.created_at", (app["id"],)).fetchall()
                 hist = db.execute("SELECT h.action,h.from_stage,h.to_stage,h.actor_role,u.display_name,h.remarks,h.created_at FROM history h JOIN users u ON u.id=h.actor_id WHERE application_id=? ORDER BY h.id DESC", (app["id"],)).fetchall()
             if self.has_permission(user["role"], "Documents", "R"):
                 result["documents"] = [dict(x) for x in docs]
@@ -340,6 +425,10 @@ class CreditHandler(BaseHTTPRequestHandler):
                 with connect() as review_db:
                     reviews = review_db.execute("SELECT item_id,status,document_id,remarks,updated_by,updated_at FROM checklist_reviews WHERE application_id=?", (app["id"],)).fetchall()
                 result["checklist_reviews"] = {row["item_id"]: dict(row) for row in reviews}
+                if user["role"] in ["CAD", "Superadmin"]:
+                    with connect() as report_db:
+                        report = report_db.execute("SELECT report_json FROM cad_validation_runs WHERE application_id=? ORDER BY generated_at DESC LIMIT 1", (app["id"],)).fetchone()
+                    result["cad_report"] = json.loads(report["report_json"]) if report else None
             if self.has_permission(user["role"], "Workflow", "R"):
                 result["history"] = [dict(x) for x in hist]
                 result["return_remarks"] = self.last_return_remarks(app["id"])
@@ -353,7 +442,7 @@ class CreditHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path); path = unquote(parsed.path)
         if path == "/" or path == "/system": return self.serve_file(BASE / "system.html")
         if path == "/prototype": return self.serve_file(BASE / "index.html")
-        if path in ["/system.css", "/system.js", "/role-switch.css", "/cad-review.css"]: return self.serve_file(BASE / path.lstrip("/"))
+        if path in ["/system.css", "/system.js", "/role-switch.css", "/cad-review.css", "/cad-validation.css"]: return self.serve_file(BASE / path.lstrip("/"))
         if path == "/api/health": return self.send_json(200, {"status": "ok", "service": "Credit Review System"})
         user, _ = self.session_user()
         if not user: return self.send_json(401, {"error": "Sign in required"})
@@ -390,6 +479,8 @@ class CreditHandler(BaseHTTPRequestHandler):
         if path == "/api/applications": return self.create_application(user)
         if path.startswith("/api/applications/") and path.endswith("/transition"):
             return self.transition_application(user, path.split("/")[-2])
+        match = re.fullmatch(r"/api/applications/([^/]+)/cad/validate", path)
+        if match: return self.run_cad_validation(user, match.group(1))
         if path.startswith("/api/applications/") and path.endswith("/documents"):
             return self.upload_document(user, path.split("/")[-2])
         if path == "/api/admin/roles": return self.create_role(user)
@@ -521,6 +612,7 @@ class CreditHandler(BaseHTTPRequestHandler):
             try: amount = int(data.get("facility", {}).get("amount", app["amount"]) or 0)
             except (ValueError, TypeError): return self.send_json(400, {"error": "Loan amount must be numeric"})
             db.execute("UPDATE applications SET customer_name=?,amount=?,data=?,updated_at=?,version=version+1 WHERE id=?", (customer, max(0, amount), json.dumps(data), now_iso(), app_id))
+        if app["stage"]=="CAD" and user["role"] in ["CAD","Superadmin"]: self.generate_cad_exception_report(app_id,user["id"])
         return self.send_json(200, {"ok": True, "version": app["version"]+1})
 
     def transition_application(self, user, app_id):
@@ -564,10 +656,16 @@ class CreditHandler(BaseHTTPRequestHandler):
                     rationale = str(decision.get("rationale", "")).strip()
                     if not recommendation or not rationale: return self.send_json(400, {"error": "Recommendation and decision rationale are required"})
                     if recommendation == "Return for clarification": return self.send_json(400, {"error": "Use Return to Risk Reviewer and provide return remarks"})
+                    if recommendation != "Recommend decline":
+                        missing_terms = [key for key in ["approved_amount", "approved_tenure_months", "approved_rate"] if decision.get(key) in (None, "")]
+                        if missing_terms: return self.send_json(400, {"error": "Record the approved amount, tenure and interest rate before sending the file to CAD"})
+                        try:
+                            if float(decision["approved_amount"]) <= 0 or float(decision["approved_tenure_months"]) <= 0 or float(decision["approved_rate"]) < 0: raise ValueError()
+                        except (TypeError, ValueError): return self.send_json(400, {"error": "Approved amount and tenure must be positive numbers; rate cannot be negative"})
                     if not self.has_permission(user["role"], "Credit decision", "U", "Recommendation") or not self.has_permission(user["role"], "Credit decision", "U", "Decision rationale"):
                         return self.send_json(403, {"error": "Decision field permission is required"})
                     target = "Declined" if recommendation == "Recommend decline" else "CAD"
-                    data = json.loads(app["data"]); data["decision"] = {"recommendation": recommendation, "rationale": rationale, "authority": decision.get("authority", ""), "by": user["display_name"], "at": now_iso()}
+                    data = json.loads(app["data"]); data["decision"] = {"recommendation": recommendation, "rationale": rationale, "authority": decision.get("authority", ""), "conditions": decision.get("conditions", ""), "approved_amount": decision.get("approved_amount", ""), "approved_tenure_months": decision.get("approved_tenure_months", ""), "approved_rate": decision.get("approved_rate", ""), "approved_emi": decision.get("approved_emi", ""), "approved_down_payment": decision.get("approved_down_payment", ""), "approved_vehicle": decision.get("approved_vehicle", ""), "by": user["display_name"], "at": now_iso()}
                     db.execute("UPDATE applications SET stage=?,status=?,data=?,updated_at=?,version=version+1 WHERE id=?", (target, "Declined" if target == "Declined" else "Approved", json.dumps(data), now_iso(), app_id))
                     self.audit(db, app_id, f"Decision · {recommendation}", stage, target, user, rationale)
                 else:
@@ -577,6 +675,12 @@ class CreditHandler(BaseHTTPRequestHandler):
                         pending = [item_id for item_id, _, _ in CAD_CHECKLIST_ITEMS if reviews.get(item_id, "Pending") not in ["Verified", "Not Applicable"]]
                         if pending:
                             return self.send_json(409, {"error": f"CAD review has {len(pending)} checklist item(s) pending or discrepant. Resolve them or return the file with remarks before completion."})
+                        with connect() as report_db:
+                            latest = report_db.execute("SELECT report_json FROM cad_validation_runs WHERE application_id=? ORDER BY generated_at DESC LIMIT 1", (app_id,)).fetchone()
+                        if not latest: return self.send_json(409, {"error": "Run CAD validation and generate an exception report before completion."})
+                        report = json.loads(latest["report_json"])
+                        blockers = [check for check in report["exceptions"] if check["status"] in ["Missing", "Discrepancy"]]
+                        if blockers: return self.send_json(409, {"error": f"CAD completion is blocked by {len(blockers)} missing-document or discrepancy exception(s). Resolve them and rerun validation."})
                     target = NEXT_STAGE.get(stage)
                     if not target: return self.send_json(409, {"error": "This stage cannot be forwarded"})
                     status = "Completed" if target == "Completed" else "In review"
@@ -704,6 +808,136 @@ class CreditHandler(BaseHTTPRequestHandler):
         for row in rows: counts[row["stage"]] = counts.get(row["stage"], 0) + 1
         return self.send_json(200, {"applications": rows, "summary": {"count": len(rows), "requested_exposure": total, "by_stage": counts}, "branches": sorted({row["branch"] for row in rows}), "allow_export": self.has_permission(user["role"], "Reporting", "R", "Export data")})
 
+    def generate_cad_exception_report(self, app_id, user_id):
+        with connect() as db:
+            app = db.execute("SELECT * FROM applications WHERE id=?", (app_id,)).fetchone()
+            if not app: return None
+            documents = [dict(row) for row in db.execute("SELECT d.*,e.extraction_status,e.extracted_text FROM documents d LEFT JOIN document_extractions e ON e.document_id=d.id WHERE d.application_id=? ORDER BY d.created_at", (app_id,)).fetchall()]
+            reviews = {row["item_id"]: dict(row) for row in db.execute("SELECT * FROM checklist_reviews WHERE application_id=?", (app_id,)).fetchall()}
+        data = json.loads(app["data"]); kyc=data.get("kyc",{}); facility=data.get("facility",{}); repayment=data.get("repayment",{}); decision=data.get("decision",{})
+        checks=[]
+        def add(rule_id, category, status, severity, expected, observed, message, action, document=""):
+            checks.append({"id":rule_id,"category":category,"status":status,"severity":severity,"expected":"" if expected is None else str(expected), "observed":"" if observed is None else str(observed), "message":message,"action":action,"document":document})
+        def has_document(key):
+            for doc in documents:
+                if doc["status"]=="Superseded": continue
+                name=normalize_text(doc["document_type"])
+                if key=="citizenship" and "citizenship" in name and "guarantor" not in name: return doc
+                if key=="guarantor_citizenship" and "citizenship" in name and "guarantor" in name: return doc
+                if key=="national_id" and ("nationalid" in name or name in ["nid","nationalidentitycard"]): return doc
+                if key=="license" and ("drivinglicense" in name or name=="license"): return doc
+                if key=="quotation" and "quotation" in name: return doc
+                if key=="income" and any(token in name for token in ["income","taxstatement","payslip","salarycertificate"]): return doc
+                if key=="bank" and "bankstatement" in name: return doc
+                if key=="business" and "businessregistration" in name: return doc
+            return None
+        inventory = [
+            ("citizenship","Borrower citizenship","Required",True),
+            ("national_id","National ID","Conditional",bool(kyc.get("national_id")) or bool(has_document("national_id"))),
+            ("license","Driving licence","Conditional",bool(kyc.get("license_no")) or bool(has_document("license"))),
+            ("quotation","Vehicle quotation","Required",True),
+            ("income","Income document","Required",True),
+            ("bank","Bank statement","Conditional",bool(repayment.get("bank_average")) or bool(has_document("bank"))),
+            ("business","Business registration","Conditional",any(word in str(kyc.get("profession","")).lower() for word in ["business","self-employed","enterprise"]) or bool(has_document("business"))),
+            ("guarantor_citizenship","Guarantor citizenship","Required",True),
+        ]
+        for key,label,requirement,applicable in inventory:
+            doc=has_document(key)
+            if not applicable:
+                add("inventory-"+key,"Document inventory","Pass","Info",requirement,"Not applicable","Conditional document is not indicated by the application data.","No action required.")
+            elif doc:
+                add("inventory-"+key,"Document inventory","Pass","Info",requirement,doc["original_name"],"Expected document is present.","CAD to verify the source document.",doc["original_name"])
+            else:
+                add("inventory-"+key,"Document inventory","Missing","High",requirement,"Not uploaded",f"Missing {label.lower()}.","Upload the required document before CAD completion.")
+        executed_docs=[doc for doc in documents if any(marker in normalize_text(doc["document_type"]) for marker in ["loanagreement","securitydocument","executedcreditdocument","creditagreement"])]
+        if executed_docs:
+            add("executed-credit-document","Executed credit documents","Pass","Info","Executed loan / security document",", ".join(doc["original_name"] for doc in executed_docs),"Executed credit document upload is present.","CAD to confirm execution and completeness.")
+        else:
+            add("executed-credit-document","Executed credit documents","Missing","High","Executed loan / security document","Not uploaded","No executed loan agreement or security document is uploaded.","Upload the executed credit documents before CAD completion.")
+        for doc in documents:
+            if doc["status"]=="Superseded": continue
+            if doc["status"]=="Mismatch found":
+                add("document-status-"+doc["id"],"Document verification","Discrepancy","High","Document values consistent","Mismatch found","The uploaded file was marked as mismatched during manual verification.","Correct or replace the file, then rerun validation.",doc["original_name"])
+            elif doc["status"]=="Needs clarification":
+                add("document-status-"+doc["id"],"Document verification","Discrepancy","High","Document is clear and complete","Needs clarification","A reviewer requested clarification on this file.","Resolve the clarification and update the document status.",doc["original_name"])
+            if not doc.get("extracted_text"):
+                already=doc["status"]=="Verified"
+                add("extraction-"+doc["id"],"Readability","Pass" if already else "Review","Info" if already else "Medium","Machine-readable text or completed human verification",doc.get("extraction_status") or "Extraction not run","Text extraction was unavailable; automated content checks cannot run." if not already else "Text extraction was unavailable; a human reviewer marked the document verified.","Enable OCR or complete a side-by-side human review.",doc["original_name"])
+        for item_id,section_title,item_label in CAD_CHECKLIST_ITEMS:
+            review=reviews.get(item_id,{})
+            state=review.get("status","Pending")
+            if item_id.startswith("additional--"):
+                required_type={"additional--0":["rorc"],"additional--1":["icrr"],"additional--2":["experiencedocument"],"additional--3":["rsvr"],"additional--4":["cvsr"]}.get(item_id,[])
+                matching=[doc for doc in documents if doc["status"]!="Superseded" and any(token in normalize_text(doc["document_type"]) for token in required_type)]
+                if matching:
+                    add("checklist-"+item_id,section_title,"Pass","Info",item_label,", ".join(doc["original_name"] for doc in matching),"Conditional supporting document is present.","CAD to verify the source document.",matching[0]["original_name"])
+                elif state=="Not Applicable":
+                    add("checklist-"+item_id,section_title,"Pass","Info",item_label,"Not applicable · "+review.get("remarks",""),"Applicability was documented by CAD.","No action required.")
+                elif state=="Discrepancy":
+                    add("checklist-"+item_id,section_title,"Discrepancy","High",item_label,review.get("remarks","Discrepancy recorded"),"CAD recorded a discrepancy against this supporting-document requirement.","Upload the corrected file or return the application with corrective-action remarks.")
+                else:
+                    add("checklist-"+item_id,section_title,"Review","Medium",item_label,"No matching upload","Confirm applicability; upload the document if required or record a reason that it is not applicable.","Upload the document or mark Not Applicable with remarks.")
+                continue
+            if state=="Verified":
+                add("checklist-"+item_id,section_title,"Pass","Info","Verified",state,"Checklist item was marked reviewed by CAD.","No action required.",next((d["original_name"] for d in documents if d["id"]==review.get("document_id")),""))
+            elif state=="Not Applicable":
+                add("checklist-"+item_id,section_title,"Pass","Info","Applicable or reason recorded","Not applicable · "+review.get("remarks",""),"Applicability was documented by CAD.","No action required.")
+            elif state=="Discrepancy":
+                add("checklist-"+item_id,section_title,"Discrepancy","High",item_label,review.get("remarks","Discrepancy recorded"),"CAD recorded a discrepancy against the standard checklist.","Return the file to the approver with corrective-action remarks.",next((d["original_name"] for d in documents if d["id"]==review.get("document_id")),""))
+            else:
+                add("checklist-"+item_id,section_title,"Review","Medium","Reviewed",state,"Checklist item has not been closed by CAD.","Compare source documents and save a review outcome.")
+        approved_fields=[("approved_amount","Approved loan amount",["loan amount","sanctioned amount","facility amount"],"amount"),("approved_tenure_months","Approved tenure",["loan tenure","tenure","repayment period"],"tenure"),("approved_rate","Approved interest rate",["interest rate","rate of interest"],"rate"),("approved_emi","Approved EMI",["monthly emi","emi","monthly installment","monthly instalment"],"money"),("approved_down_payment","Approved down payment",["down payment","margin amount"],"money")]
+        required_baseline=[key for key in ["approved_amount","approved_tenure_months","approved_rate"] if decision.get(key) in (None,"")]
+        combined=""
+        if required_baseline:
+            add("approved-terms-baseline","Approved credit terms","Missing","High","Approved amount, tenure and rate recorded","Missing: "+", ".join(required_baseline),"Approval did not record a complete term baseline for comparison.","Return the application to the approver to record approved credit terms.")
+        else:
+            term_docs=[doc for doc in documents if doc["status"]!="Superseded" and doc.get("extracted_text") and any(word in normalize_text(doc["document_type"]) for word in ["approval","sanction","agreement","facilityletter","creditterms"])]
+            source_docs=term_docs or [doc for doc in documents if doc["status"]!="Superseded" and doc.get("extracted_text")]
+            combined=" ".join(doc.get("extracted_text","") for doc in source_docs)
+            for key,label,labels,kind in approved_fields:
+                expected=decision.get(key)
+                if expected in (None,""): continue
+                observed=labeled_number(combined,labels)
+                if observed is None:
+                    add("approved-term-"+key,"Approved credit terms","Review","Medium",expected,"Term value not machine-located","The approved term was not found next to a recognized label in readable document text.","Check the signed approval / agreement manually and record the checklist outcome.",", ".join(doc["original_name"] for doc in source_docs))
+                    continue
+                try:
+                    expected_number=float(expected)
+                    tolerance=1.0 if kind=="money" else 0.01
+                    matches=abs(expected_number-observed)<=tolerance
+                except (TypeError,ValueError):
+                    matches=normalize_text(str(expected))==normalize_text(str(observed))
+                status="Pass" if matches else "Discrepancy"
+                add("approved-term-"+key,"Approved credit terms",status,"Info" if matches else "High",expected,observed,"Extracted term matches approval baseline." if matches else "Executed document term differs from the approved baseline.","No action required." if matches else "Correct the executed document or obtain an authorized approval variation.",", ".join(doc["original_name"] for doc in source_docs))
+        vehicle_term=str(decision.get("approved_vehicle","")).strip()
+        if vehicle_term:
+            if combined and normalize_text(vehicle_term) in normalize_text(combined):
+                add("approved-term-vehicle","Approved credit terms","Pass","Info",vehicle_term,"Found in readable document text","Approved vehicle/security term was located.","No action required.")
+            else:
+                add("approved-term-vehicle","Approved credit terms","Review","Medium",vehicle_term,"Not machine-located","The approved vehicle/security description was not located in readable text.","Verify the executed document manually.")
+        approved_conditions=str(decision.get("conditions","")).strip()
+        if approved_conditions:
+            if combined and normalize_text(approved_conditions) in normalize_text(combined):
+                add("approved-term-conditions","Approved credit terms","Pass","Info",approved_conditions,"Found in readable document text","Approval conditions were located in the executed document.","No action required.")
+            else:
+                add("approved-term-conditions","Approved credit terms","Review","Medium",approved_conditions,"Not machine-located","Approval conditions were not located as entered in readable document text.","Check that each approved condition is reflected in the executed documents.")
+        exceptions=[check for check in checks if check["status"]!="Pass"]
+        counts={status:sum(1 for check in checks if check["status"]==status) for status in ["Pass","Missing","Discrepancy","Review"]}
+        report={"id":uuid.uuid4().hex,"application_id":app_id,"generated_at":now_iso(),"checklist_title":CHECKLIST_DOCUMENT["title"],"checklist_version":CHECKLIST_DOCUMENT["version"],"approved_terms_recorded":not required_baseline,"summary":{"total_checks":len(checks),"exceptions":len(exceptions),**counts},"checks":checks,"exceptions":exceptions,"documents":[{"id":doc["id"],"name":doc["original_name"],"type":doc["document_type"],"extraction_status":doc.get("extraction_status") or "Not extracted","text_characters":len(doc.get("extracted_text") or "")} for doc in documents],"notice":"Automated comparison is a screening aid. Validate every exception against the executed source document and current approved policy."}
+        with connect() as db:
+            db.execute("INSERT INTO cad_validation_runs(id,application_id,generated_by,generated_at,report_json) VALUES(?,?,?,?,?)",(report["id"],app_id,user_id,report["generated_at"],json.dumps(report)))
+        return report
+
+    def run_cad_validation(self, user, app_id):
+        if not self.has_permission(user["role"], "Documents", "R", "Verification result"): return self.send_json(403, {"error":"CAD document review access required"})
+        with connect() as db: app=db.execute("SELECT * FROM applications WHERE id=?",(app_id,)).fetchone()
+        if not app: return self.send_json(404, {"error":"Application not found"})
+        if not self.can_see_app(user,app): return self.send_json(403, {"error":"Application outside your scope"})
+        if user["role"]!="Superadmin" and (user["role"]!="CAD" or app["stage"]!="CAD"): return self.send_json(403, {"error":"Only CAD can run checks at the CAD stage"})
+        report=self.generate_cad_exception_report(app_id,user["id"])
+        return self.send_json(200,{"report":report})
+
     def upload_document(self, user, app_id):
         if not self.has_permission(user["role"], "Documents", "C", "Document upload"): return self.send_json(403, {"error": "Document upload permission required"})
         with connect() as db: app = db.execute("SELECT * FROM applications WHERE id=?", (app_id,)).fetchone()
@@ -719,18 +953,26 @@ class CreditHandler(BaseHTTPRequestHandler):
         if not payload or len(payload) > 10*1024*1024: return self.send_json(400, {"error": "File must be between 1 byte and 10 MB"})
         original = Path(file_part.get_filename()).name[:180]
         ext = Path(original).suffix.lower()
-        if ext not in [".pdf", ".png", ".jpg", ".jpeg", ".webp"]: return self.send_json(400, {"error": "Allowed file types: PDF, PNG, JPG, JPEG, WEBP"})
+        if ext not in [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".docx", ".txt"]: return self.send_json(400, {"error": "Allowed file types: PDF, DOCX, TXT, PNG, JPG, JPEG, WEBP"})
         stored = uuid.uuid4().hex + ext; (UPLOAD_DIR/stored).write_bytes(payload)
         doc_id = uuid.uuid4().hex
         doc_type = str(parse_qs(parsed_query(self.path)).get("type", ["Supporting document"])[0])[:80]
-        with connect() as db: db.execute("INSERT INTO documents(id,application_id,original_name,stored_name,content_type,size,document_type,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (doc_id,app_id,original,stored,file_part.get_content_type() or "application/octet-stream",len(payload),doc_type,user["id"],now_iso()))
-        return self.send_json(201, {"id": doc_id, "filename": original, "status": "Pending verification", "ocr_status": "Not configured"})
+        extraction_status=""; extracted_text=""
+        extraction_status,extracted_text=extract_document_text(UPLOAD_DIR/stored)
+        if len(extracted_text)>250_000:
+            extracted_text=extracted_text[:250_000]
+            extraction_status += " (text limited to first 250k characters)"
+        with connect() as db:
+            db.execute("INSERT INTO documents(id,application_id,original_name,stored_name,content_type,size,document_type,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (doc_id,app_id,original,stored,file_part.get_content_type() or "application/octet-stream",len(payload),doc_type,user["id"],now_iso()))
+            db.execute("INSERT INTO document_extractions(document_id,extraction_status,extracted_text,extracted_at) VALUES(?,?,?,?)",(doc_id,extraction_status,extracted_text,now_iso()))
+        report=self.generate_cad_exception_report(app_id,user["id"]) if app["stage"]=="CAD" and user["role"] in ["CAD","Superadmin"] else None
+        return self.send_json(201, {"id": doc_id, "filename": original, "status": "Pending verification", "extraction_status": extraction_status, "report_id":report["id"] if report else None})
 
     def update_document_status(self, user, doc_id):
         try: data = self.body_json()
         except ValueError as e: return self.send_json(400, {"error": str(e)})
         status = str(data.get("status", ""))
-        if status not in ["Pending verification", "Verified", "Mismatch found", "Needs clarification"]: return self.send_json(400, {"error": "Invalid document status"})
+        if status not in ["Pending verification", "Verified", "Mismatch found", "Needs clarification", "Superseded"]: return self.send_json(400, {"error": "Invalid document status"})
         if not self.has_permission(user["role"], "Documents", "U", "Verification result"): return self.send_json(403, {"error": "Document verification permission required"})
         with connect() as db:
             doc = db.execute("SELECT d.application_id,a.* FROM documents d JOIN applications a ON a.id=d.application_id WHERE d.id=?", (doc_id,)).fetchone()
@@ -739,6 +981,7 @@ class CreditHandler(BaseHTTPRequestHandler):
             if user["role"] != "Superadmin" and STAGE_OWNER.get(doc["stage"]) != user["role"]: return self.send_json(403, {"error": "Only the assigned stage role can verify documents"})
             db.execute("UPDATE documents SET status=? WHERE id=?", (status, doc_id))
             self.audit(db, doc["application_id"], "Document status updated", doc["stage"], doc["stage"], user, status)
+        if doc["stage"] == "CAD": self.generate_cad_exception_report(doc["application_id"], user["id"])
         return self.send_json(200, {"ok": True, "status": status})
 
     def update_checklist_review(self, user, app_id, item_id):
@@ -751,7 +994,7 @@ class CreditHandler(BaseHTTPRequestHandler):
         document_id = str(data.get("document_id", "")).strip() or None
         if status not in ["Pending", "Verified", "Discrepancy", "Not Applicable"]: return self.send_json(400, {"error": "Invalid checklist status"})
         if status in ["Discrepancy", "Not Applicable"] and len(remarks) < 5: return self.send_json(400, {"error": "Add specific remarks for a discrepancy or not-applicable item"})
-        if status == "Verified" and item_id.startswith("documents--") and not document_id: return self.send_json(400, {"error": "Link the supporting uploaded document before marking this item verified"})
+        if status == "Verified" and item_id.startswith(("documents--", "additional--")) and not document_id: return self.send_json(400, {"error": "Link the supporting uploaded document before marking this item verified"})
         if not self.has_permission(user["role"], "Documents", "U", "Verification result"): return self.send_json(403, {"error": "Document checklist review permission required"})
         with connect() as db:
             app = db.execute("SELECT * FROM applications WHERE id=?", (app_id,)).fetchone()
@@ -766,6 +1009,7 @@ class CreditHandler(BaseHTTPRequestHandler):
             from_stage = app["stage"]
             audit_text = f"{status} · {item[2]}" + (f" · {remarks}" if remarks else "")
             self.audit(db, app_id, "CAD checklist review", from_stage, from_stage, user, audit_text)
+        self.generate_cad_exception_report(app_id, user["id"])
         return self.send_json(200, {"ok": True, "item_id": item_id, "status": status})
 
     def download_document(self, user, doc_id):
